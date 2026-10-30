@@ -39,6 +39,14 @@ With Docker:
 docker compose up --build
 ```
 
+## Deploy
+
+Production is deployed with [Kamal](https://kamal-deploy.org) to a Docker host
+behind a Cloudflare tunnel: `make deploy` runs the tests, then `kamal deploy`
+(`config/deploy.yml`). `make logs-prod` follows the logs; `kamal rollback
+<version>` goes back. Details, and how to enable TURN, are in
+[deploying.md](docs/deploying.md).
+
 ## Docs
 
 | Doc                                     | What is in it                                                             |
@@ -47,7 +55,7 @@ docker compose up --build
 | [shortcuts.md](docs/shortcuts.md)       | Every command, with its keys and pad button                               |
 | [themes.md](docs/themes.md)             | Writing your own viewer layout in CSS                                     |
 | [architecture.md](docs/architecture.md) | How the pieces fit: signalling, peer topology, what crosses the wire      |
-| [deploying.md](docs/deploying.md)       | Docker, TLS, TURN, and why HTTPS is worth having                          |
+| [deploying.md](docs/deploying.md)       | Docker, Kamal, TLS, TURN, and why HTTPS is worth having                   |
 | [development.md](docs/development.md)   | Build, the gates, and how to check a change is real                       |
 | [roadmap.md](docs/roadmap.md)           | Open decisions, what is wanted next, ideas                                |
 

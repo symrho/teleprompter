@@ -1,0 +1,58 @@
+# Kamal deploy for the Docker host (home-docker). `make deploy` runs the tests,
+# then `kamal deploy`: build the image locally, push it to ghcr.io, and swap it in
+# behind kamal-proxy with a health check. Host-side setup (kamal-proxy and the
+# shared Cloudflare tunnel) lives in ~/dev/17xande.dev/infra.
+service: teleprompter
+
+image: 17xande-dev/teleprompter
+
+registry:
+  server: ghcr.io
+  username: 17xande
+  # Read from .kamal/secrets.
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+# The host is linux/amd64. Building for it explicitly keeps an arm laptop honest.
+builder:
+  arch: amd64
+
+ssh:
+  user: ubuntu
+
+# No memory limit: the app is bounded by MAX_PEERS (2000 sockets), not by a
+# figure we have measured, so a guess could OOM-kill live sessions.
+servers:
+  web:
+    hosts:
+      - home-docker
+
+# Cloudflare terminates TLS and the shared tunnel forwards the hostname to
+# http://kamal-proxy:80, so kamal-proxy serves plain http and asks for no cert.
+# The Host header reaches the app unchanged, which the WebSocket Origin check in
+# src/backend/signal.go needs. Signalling is a WebSocket on /ws; kamal-proxy
+# passes the upgrade through and its response timeout only covers response
+# headers, and the app pings every 54s, inside Cloudflare's 100s idle limit.
+# The health check is /viewer: a static 200. `/` redirects to /control, and the
+# app has no dedicated health route. The image sets no Docker HEALTHCHECK.
+proxy:
+  ssl: false
+  host: teleprompter.17xande.dev
+  app_port: 8080
+  healthcheck:
+    path: /viewer
+
+# No env is set. STUN_URLS, TURN_URLS and TURN_TTL are empty in production, and
+# TURN_SECRET is ignored unless TURN_URLS is also set (src/backend/ice.go), so
+# the app's defaults apply: the public Google STUN server, no TURN. The app has
+# no volume; it keeps rooms in memory only.
+#
+# To enable TURN later:
+#   env:
+#     clear:
+#       TURN_URLS: "turn:turn.example.com:3478,turns:turn.example.com:5349"
+#     secret:
+#       - TURN_SECRET
+# and put TURN_SECRET=<coturn static-auth-secret> in the gitignored .env, then
+# add `TURN_SECRET=$TURN_SECRET` to .kamal/secrets (Kamal expands $VAR in secret
+# values). STUN_URLS and TURN_TTL (seconds, default 3600) go under `clear` too.

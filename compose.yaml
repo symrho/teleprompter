@@ -1,0 +1,14 @@
+# Local run only: `docker compose up --build`, then http://localhost:8080.
+# Production is deployed with Kamal (config/deploy.yml), not from this file.
+services:
+  teleprompter:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # Optional TURN config (see src/backend/ice.go); leave unset to use only
+      # the default public STUN server.
+      - STUN_URLS=${STUN_URLS:-}
+      - TURN_URLS=${TURN_URLS:-}
+      - TURN_SECRET=${TURN_SECRET:-}
+      - TURN_TTL=${TURN_TTL:-}

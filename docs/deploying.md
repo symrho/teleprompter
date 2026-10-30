@@ -2,7 +2,7 @@
 
 ## Docker
 
-The image is a three-stage build: Deno bundles the frontend, Go compiles the
+For a local run. The image is a three-stage build: Deno bundles the frontend, Go compiles the
 server with that bundle embedded, and the result is copied into Alpine.
 
 ```sh
@@ -72,27 +72,52 @@ If you serve it over plain HTTP on a LAN, that is a legitimate setup; just know
 that "copy viewer link" falls back to logging the URL rather than reaching the
 clipboard.
 
-## Behind Cloudflare, via Coolify
+## Production: Kamal behind a Cloudflare Tunnel
 
-This is what the project is actually deployed on, recorded because the
-alternatives were considered and rejected for reasons that still hold:
-Dockerised under **Coolify** on an Oracle Cloud always-free VM, with
-**Cloudflare** in front for TLS and asset caching. Coolify's git-push webhook
-gives CD from `main`.
+This is what the project is actually deployed on: [Kamal](https://kamal-deploy.org)
+(`config/deploy.yml`) to a Docker host at home (`home-docker`), with
+**Cloudflare** in front for TLS and asset caching. The host runs kamal-proxy
+with nothing published, behind one shared Cloudflare tunnel; that host-side
+setup lives in `~/dev/17xande.dev/infra`. The tunnel's public hostname
+`teleprompter.17xande.dev` has service `http://kamal-proxy:80`, and kamal-proxy
+routes by host to the app (port 8080). Cloudflare terminates TLS, so Kamal runs
+with `proxy.ssl: false`.
 
-Two things to get right:
+```sh
+make deploy                        # tests, then kamal deploy (build, push to ghcr.io, swap in)
+make deploy KAMAL=$HOME/.local/share/gem/ruby/3.4.0/bin/kamal   # if kamal is not on PATH
+kamal rollback <version>           # back to an earlier image; `kamal app containers` lists them
+make logs-prod                     # kamal app logs -f
+```
 
-- **WebSocket signalling passes through Cloudflare's proxy fine** on the free
-  plan. It needs no special treatment.
+`make deploy` refuses uncommitted tracked changes, since Kamal builds from
+`HEAD`. Registry login is `gh auth token` (see `.kamal/secrets`). The app is
+stateless (rooms live in memory), so there is no volume and a deploy drops every
+open signalling socket; clients reconnect.
+
+Things to get right:
+
+- **WebSocket signalling passes through Cloudflare's proxy and kamal-proxy
+  fine.** It needs no special treatment. The origin check in `signal.go`
+  compares `Origin` with the request's `Host`, so do not set an `httpHostHeader`
+  override on the tunnel hostname.
 - **Cache rules should target the hashed `dist/` assets only, never `/ws`.** The
   bundle's filenames are content-hashed, so they are safe to cache hard; the
   signalling socket obviously is not.
+- **The health check is `/viewer`**, a static page that returns 200. `/`
+  redirects to `/control` and the app has no health route of its own.
 
-Render was rejected because its free tier sleeps after ~15 minutes, and a 30s
-cold start on the first signalling connection is bad for a click-to-start-a-room
-tool. Running Coolify on a machine at home was rejected because GitHub's webhook
-has to reach the CD control plane, which would mean port-forwarding or a tunnel
-into home NAT to solve what the Oracle box's public IP already solves.
+Operating production, from this repo on your laptop
+(untested beyond `make logs-prod`; reasoned from Kamal's behaviour):
+
+```sh
+kamal app logs -f            # or: kamal app logs --since 1h
+kamal app details            # container state and version
+```
+
+The app has no secrets today and no env is set in `config/deploy.yml`, so the
+defaults in the table above apply (public STUN, no TURN). Enabling TURN is
+described in the next section.
 
 ## TURN (NAT/firewall fallback)
 
@@ -112,7 +137,13 @@ TURN_TTL=3600 \
 go run .
 ```
 
-With no `TURN_URLS`/`TURN_SECRET` set, the welcome carries STUN only.
+With no `TURN_URLS`/`TURN_SECRET` set, the welcome carries STUN only. Both are
+needed: `TURN_SECRET` alone is ignored.
+
+In the Kamal deploy, set `TURN_URLS` (and `STUN_URLS`/`TURN_TTL` if wanted)
+under `env.clear` in `config/deploy.yml`, list `TURN_SECRET` under `env.secret`,
+put its value in the gitignored `.env`, and add `TURN_SECRET=$TURN_SECRET` to
+`.kamal/secrets` (Kamal expands `$VAR` in secret values). Then `make deploy`.
 
 ## Who can control a room
 
