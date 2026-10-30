@@ -60,7 +60,7 @@
     // test`'s type-check pass pulls in the whole configured project graph
     // (including teleprompter.ts's raw CSS imports, which only the bundler
     // knows how to resolve) even for a test file that doesn't import it.
-    "test": "deno test --no-check --allow-read=. src/frontend/scripts/*_test.ts src/frontend/scripts/custom/*_test.ts",
+    "test": "deno test --no-check --allow-read=. src/frontend/scripts/*_test.ts src/frontend/scripts/custom/*_test.ts tools/mcp/*_test.ts",
     // The glob skips dotfiles, so dist/.gitkeep — tracked so a fresh checkout
     // has something for go:embed to find — survives this.
     "clean": "rm -rf src/backend/dist/*",
