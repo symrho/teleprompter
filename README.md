@@ -2,6 +2,14 @@
 
 An open source teleprompter running in your browser. What a time to be alive.
 
+> **This is symrho's fork.** It adds a `linkedin-tmp100` preset (mirrored,
+> narrow-column prompting on an iPad mini in a Glide Gear TMP100 with a webcam
+> behind the glass) and a local agent API so an AI agent can load and
+> configure scripts. Start with [QUICKSTART.md](QUICKSTART.md); then
+> [AGENT_API.md](AGENT_API.md), [ARCHITECTURE_CUSTOM.md](ARCHITECTURE_CUSTOM.md),
+> [UPSTREAM.md](UPSTREAM.md) and [ROADMAP_CUSTOM.md](ROADMAP_CUSTOM.md).
+> Everything below is upstream's README.
+
 A **control** page holds the script and the controls; one or more **viewer**
 displays show it — a window on a second monitor, a tablet on the floor, a laptop
 across the room. Scroll position, content, speed, text size, layout, messages
