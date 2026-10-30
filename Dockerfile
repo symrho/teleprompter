@@ -1,5 +1,5 @@
 # Stage 1: bundle the frontend with Deno.
-FROM denoland/deno:alpine-2.9.6 AS frontend
+FROM denoland/deno:alpine-2.9.7 AS frontend
 WORKDIR /app
 COPY deno.jsonc deno.lock ./
 COPY bundle.ts ./
@@ -23,7 +23,7 @@ COPY --from=frontend /app/src/backend/dist ./src/backend/dist
 RUN CGO_ENABLED=0 go build -o /teleprompter ./src/backend
 
 # Stage 3: minimal runtime image.
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates
 COPY --from=backend /teleprompter /usr/local/bin/teleprompter
 EXPOSE 8080
