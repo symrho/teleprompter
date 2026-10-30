@@ -52,6 +52,8 @@ import {
   layoutCommands,
 } from "./controlCommands.ts";
 import { PaletteControls } from "./paletteControls.ts";
+// CUSTOM (symrho fork)
+import { seedTmp100Theme, Tmp100Controls } from "./custom/tmp100Controls.ts";
 import { SettingsControls } from "./settingsControls.ts";
 import { GamepadControls } from "./gamepadControls.ts";
 import { connectController, type ControllerLink } from "./webrtc.ts";
@@ -115,6 +117,8 @@ export class Teleprompter {
   static readonly PDF_FIT_SCALE = 10;
 
   docControls: DocControls;
+  // CUSTOM (symrho fork)
+  tmp100: Tmp100Controls;
   splitPanel: WaSplitPanel;
   btnMessage: WaButton;
   editor: Wordgard;
@@ -420,9 +424,21 @@ export class Teleprompter {
     // ThemeControls owns the layout dropdown and its dialogs, and reports the
     // resulting layout as one message — including while the operator is typing
     // CSS, which is what makes the preview a live feedback loop.
+    // CUSTOM (symrho fork): the preset has to be in theme storage before
+    // ThemeControls reads it, or it is missing from the Layout dropdown.
+    seedTmp100Theme();
     this.themeControls = new ThemeControls();
     this.themeControls.drpLayouts.addEventListener("theme", (e) => {
       this.#pushTheme((<CustomEvent<ThemeMessage>> e).detail);
+    });
+    // CUSTOM (symrho fork): the TMP100 card. Text size goes through the
+    // operator's own slider so the preset lands in the same state a drag does.
+    this.tmp100 = new Tmp100Controls({
+      themes: this.themeControls,
+      setTextScale: (rem) => {
+        this.rngScale.value = Math.round(rem * 10);
+        this.rngScale.dispatchEvent(new Event("input"));
+      },
     });
 
     // The last half-second of scrolling is still on the throttle when a page
