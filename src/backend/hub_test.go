@@ -190,7 +190,11 @@ func TestLeave_EmptyRoomRemovedFromHub(t *testing.T) {
 
 func TestSendTo_UnknownPeerIsNoop(t *testing.T) {
 	h := newHub()
-	r := h.roomFor("room1")
+	v := mustJoin(t, h, "room1", roleViewer, "", newTestConn(t))
+	recvMsg(t, v) // waiting
+	h.mu.Lock()
+	r := h.rooms["room1"]
+	h.mu.Unlock()
 	r.sendTo("nonexistent", []byte(`{"kind":"noop"}`)) // must not panic or block
 }
 
@@ -447,5 +451,39 @@ func TestServeWS_RefusalIsAClose1013(t *testing.T) {
 	_, _, err = c.ReadMessage()
 	if !websocket.IsCloseError(err, websocket.CloseTryAgainLater) {
 		t.Fatalf("read error = %v, want a 1013 close", err)
+	}
+}
+
+// Every seat taken must be given back, or the hub slowly fills and locks
+// everybody out. A controller that replaces the sitting one takes no extra seat
+// and leaving returns the one it has.
+func TestPeerCount_ReturnsToZero(t *testing.T) {
+	h := newHub()
+	peers := func() int {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.peers
+	}
+
+	c1 := mustJoin(t, h, "room1", roleController, "k", newTestConn(t))
+	recvMsg(t, c1) // viewer-list
+	c2 := mustJoin(t, h, "room1", roleController, "k", newTestConn(t))
+	recvMsg(t, c2) // viewer-list
+	if got := peers(); got != 1 {
+		t.Fatalf("after a controller replaced another, peers = %d, want 1", got)
+	}
+	v := mustJoin(t, h, "room1", roleViewer, "", newTestConn(t))
+	if got := peers(); got != 2 {
+		t.Fatalf("with a viewer, peers = %d, want 2", got)
+	}
+
+	h.leave(c1) // the evicted controller: its seat was already given up
+	if got := peers(); got != 2 {
+		t.Fatalf("an evicted controller leaving changed peers to %d, want 2", got)
+	}
+	h.leave(c2)
+	h.leave(v)
+	if got := peers(); got != 0 {
+		t.Fatalf("after everyone left, peers = %d, want 0", got)
 	}
 }

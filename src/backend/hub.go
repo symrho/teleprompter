@@ -125,17 +125,6 @@ func newHub() *hub {
 	}
 }
 
-func (h *hub) roomFor(name string) *room {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	r, ok := h.rooms[name]
-	if !ok {
-		r = &room{name: name, viewers: make(map[string]*peer)}
-		h.rooms[name] = r
-	}
-	return r
-}
-
 // sendTo delivers msg to the single peer with the given id, if present in
 // the room. Unlike a broadcast, this never touches peers other than the
 // addressed one, since with >2 participants "everyone but the sender" is no
