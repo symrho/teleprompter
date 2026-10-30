@@ -10,6 +10,7 @@ import type WaSlider from "@awesome.me/webawesome/dist/components/slider/slider.
 import type WaSwitch from "@awesome.me/webawesome/dist/components/switch/switch.js";
 import type { ThemeControls } from "../themeControls.ts";
 import { ThemeStorage } from "../themes.ts";
+import type { Command } from "../commands.ts";
 import {
   TMP100_DEFAULTS,
   TMP100_LIMITS,
@@ -83,6 +84,8 @@ export class Tmp100Controls {
     this.#writeTheme();
     this.status = document.createElement("div");
     this.status.className = "tmp100-status";
+    this.status.style.cssText =
+      "white-space:pre-line;font-size:0.8rem;opacity:0.8";
     this.#buildCard();
     this.#render();
   }
@@ -119,6 +122,34 @@ export class Tmp100Controls {
 
   reset() {
     this.update({ ...TMP100_DEFAULTS });
+  }
+
+  /** Show whether an agent can reach this page. */
+  setBridgeStatus(s: "connecting" | "connected" | "offline") {
+    this.#bridge = s === "connected"
+      ? "Agent API: ready"
+      : s === "connecting"
+      ? "Agent API: connecting…"
+      : "Agent API: offline (manual control only)";
+    this.#renderStatus();
+  }
+
+  /** Show the script's timing and the prompter's state. */
+  setTiming(status: {
+    state: string;
+    script: { words: number; targetWpm: number; estimatedDuration: string };
+  }) {
+    const t = status.script;
+    this.#timing =
+      `${status.state} · ${t.words} words · ${t.targetWpm} WPM · ~${t.estimatedDuration}`;
+    this.#renderStatus();
+  }
+
+  #bridge = "";
+  #timing = "";
+  #renderStatus() {
+    this.status.textContent = [this.#timing, this.#bridge].filter(Boolean)
+      .join("\n");
   }
 
   #writeTheme() {
@@ -204,4 +235,33 @@ export class Tmp100Controls {
     if (transport) transport.after(card);
     else document.querySelector("#controls")?.append(card);
   }
+}
+
+/**
+ * The TMP100 commands, appended to upstream's table by the control page.
+ *
+ * Kept out of COMMAND_SPECS so docs/shortcuts.md (generated from that table
+ * and guarded by a test) stays upstream's; QUICKSTART.md lists these instead.
+ */
+export function tmp100Commands(
+  controls: Tmp100Controls,
+  startOver: () => void,
+): Command[] {
+  return [
+    {
+      id: "custom.startOver",
+      label: "Back to the beginning (and pause)",
+      group: "Scroll",
+      shortcut: "Mod+Alt+KeyT",
+      keywords: ["start over", "restart", "top", "rewind", "tmp100"],
+      run: startOver,
+    },
+    {
+      id: "custom.tmp100",
+      label: "Use the LinkedIn / TMP100 preset",
+      group: "Layout",
+      keywords: ["linkedin", "tmp100", "mirror", "preset", "teleprompter"],
+      run: () => controls.applyPreset(),
+    },
+  ];
 }

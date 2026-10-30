@@ -43,7 +43,12 @@ import "../styles/style.css";
 import type { Doc } from "./doc.ts";
 import { DocControls } from "./docControls.ts";
 import { Wordgard } from "wordgard/editor";
-import { newEditor, restoreEditor, saveEditor } from "./editor.ts";
+import {
+  editorJSONFromHtml,
+  newEditor,
+  restoreEditor,
+  saveEditor,
+} from "./editor.ts";
 import type { TextSizeAccess } from "./textSizeMenu.ts";
 import {
   buildCommands,
@@ -53,7 +58,18 @@ import {
 } from "./controlCommands.ts";
 import { PaletteControls } from "./paletteControls.ts";
 // CUSTOM (symrho fork)
-import { seedTmp100Theme, Tmp100Controls } from "./custom/tmp100Controls.ts";
+import {
+  seedTmp100Theme,
+  tmp100Commands,
+  Tmp100Controls,
+} from "./custom/tmp100Controls.ts";
+import { AgentController, type AgentHost } from "./custom/agent.ts";
+import {
+  connectAgentBridge,
+  htmlToText,
+  nextFrame,
+} from "./custom/agentBridge.ts";
+import { TMP100_SLUG } from "./custom/tmp100.ts";
 import { SettingsControls } from "./settingsControls.ts";
 import { GamepadControls } from "./gamepadControls.ts";
 import { connectController, type ControllerLink } from "./webrtc.ts";
@@ -119,6 +135,7 @@ export class Teleprompter {
   docControls: DocControls;
   // CUSTOM (symrho fork)
   tmp100: Tmp100Controls;
+  agent: AgentController;
   splitPanel: WaSplitPanel;
   btnMessage: WaButton;
   editor: Wordgard;
@@ -542,6 +559,16 @@ export class Teleprompter {
     // seam they reach for has to exist by now. The palette also installs the
     // key bindings, which is why there is no keyup listener here any more.
     const commands = buildCommands(this);
+    // CUSTOM (symrho fork): the agent API and the TMP100 commands. Built on
+    // the same host, so a command, the card and an agent share one path.
+    const agentHost = this.#agentHost();
+    this.agent = new AgentController(agentHost, localStorage);
+    commands.push(...tmp100Commands(this.tmp100, () => {
+      agentHost.setRunning(false);
+      agentHost.goto(0);
+    }));
+    connectAgentBridge(this.agent, (s) => this.tmp100.setBridgeStatus(s));
+    setInterval(() => this.tmp100.setTiming(this.agent.status()), 1000);
     this.palette = new PaletteControls(commands, {
       isEditorFocused: () => this.editor.hasFocus,
       providers: [
@@ -1020,7 +1047,10 @@ export class Teleprompter {
     this.#pendingSettings = { ...this.#pendingSettings, ...patch };
     if (this.#settingsFrame) return;
 
-    this.#settingsFrame = requestAnimationFrame(() => {
+    // CUSTOM (symrho fork): nextFrame, not requestAnimationFrame, so a change
+    // made while this tab is hidden (an agent, behind the recording app) is
+    // still sent. See agentBridge.ts.
+    this.#settingsFrame = nextFrame(() => {
       this.#settingsFrame = 0;
       const msg = {
         type: "settings",
@@ -1985,6 +2015,93 @@ export class Teleprompter {
     for (const slider of this.#sliderDefaults.keys()) {
       this.resetSlider(slider);
     }
+  }
+
+  /**
+   * CUSTOM (symrho fork): the control page as the agent API sees it.
+   *
+   * Every member drives an existing control or funnel — the two transport
+   * sliders through their `input` event, the Space-bar toggle, the theme
+   * dropdown's `apply`, the same send `sendMyPosition` makes — so there is no
+   * second copy of any state for an agent to drift from.
+   */
+  #agentHost(): AgentHost {
+    let textFor: string | null = null;
+    let text = "";
+    return {
+      snapshot: () => {
+        let local = 0;
+        let remote = 0;
+        let connected = 0;
+        for (const v of this.viewers.values()) {
+          if (v.state !== "connected") continue;
+          connected++;
+          if (v.local) local++;
+          else remote++;
+        }
+        const layout = this.themeControls.storage.getLayout();
+        const id = this.docControls.storage.getCurrentID();
+        return {
+          speed: -this.rngSpeed.value,
+          running: this.#autoScrollRunning,
+          textScale: this.rngScale.value / 10,
+          layout,
+          layoutName: this.themeControls.storage.layoutName(layout),
+          viewers: { connected, local, remote },
+          signaling: this.#signaling === "connected",
+          position: this.#lastRatio,
+          liveEditing: this.settings.liveEditing,
+          draftHeld: this.#draftHeld,
+          pdfOpen: !!this.#pdfBytes,
+          document: { id, name: this.docControls.storage.get(id)?.name ?? "" },
+        };
+      },
+      setSpeed: (speed) => {
+        this.rngSpeed.value = -speed;
+        this.rngSpeed.dispatchEvent(new Event("input"));
+      },
+      setRunning: (on) => {
+        if (this.#autoScrollRunning !== on) this.toggleAutoScroll();
+      },
+      setTextScale: (rem) => {
+        this.rngScale.value = Math.round(rem * 10);
+        this.rngScale.dispatchEvent(new Event("input"));
+      },
+      setLayout: (slug) => {
+        if (slug === TMP100_SLUG) this.tmp100.applyPreset();
+        else this.themeControls.apply(slug);
+      },
+      tmp100: () => this.tmp100.params(),
+      updateTmp100: (patch) => void this.tmp100.update(patch),
+      goto: (r) => {
+        this.#lastRatio = r;
+        this.link.sendScroll(r);
+        this.#postToPreview({ type: "scroll", r, s: 0 });
+      },
+      loadDocument: (name, html) => {
+        if (this.#pdfBytes) this.closePdf();
+        this.docControls.putDocument(name, editorJSONFromHtml(html));
+        // Published whatever live editing says: an agent loading a script is
+        // the deliberate "show it now" that Send my script is by hand.
+        this.pushContent();
+      },
+      displayedText: () => {
+        if (this.#pdfBytes) return "";
+        if (textFor !== this.#publishedHtml) {
+          textFor = this.#publishedHtml;
+          text = htmlToText(textFor);
+        }
+        return text;
+      },
+      scrollRange: () => {
+        const stage = this.#previewScroller();
+        return stage ? stage.scrollHeight - stage.clientHeight : null;
+      },
+      // Long enough for a settings frame, the preview's relayout and a
+      // viewer's content message; timers rather than frames, since this page
+      // may be hidden.
+      settle: () => new Promise((resolve) => setTimeout(resolve, 400)),
+    };
   }
 
   /** The Space-bar action, and the palette's "Start / stop scrolling". */

@@ -231,6 +231,13 @@ export function tmp100Css(p: Tmp100Params): string {
   transform: ${flip};
   hyphens: none;
 }
+/* Stage directions loaded through the agent API ([Pause.], [CUE 2]) are a
+   coloured span (CUE_COLOUR in script.ts): smaller, so the eye skips them. */
+#main span[style*="7aa2ff" i],
+#main span[style*="122, 162, 255"] {
+  font-size: 0.6em;
+  font-weight: 400;
+}
 #main p + p {
   margin-top: ${p.paragraphGap}em;
 }
