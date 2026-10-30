@@ -130,3 +130,28 @@ func TestSecurityHeadersSetNosniff(t *testing.T) {
 		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
 	}
 }
+
+func TestServerRefusesOversizedHeaders(t *testing.T) {
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := newServer("", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Config.Handler = cfg.Handler
+	srv.Config.MaxHeaderBytes = cfg.MaxHeaderBytes
+	srv.Start()
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		size int
+		want int
+	}{{1 << 10, http.StatusOK}, {128 << 10, http.StatusRequestHeaderFieldsTooLarge}} {
+		req, _ := http.NewRequest("GET", srv.URL, nil)
+		req.Header.Set("X-Big", strings.Repeat("a", tc.size))
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != tc.want {
+			t.Errorf("%d byte header: status %d, want %d", tc.size, res.StatusCode, tc.want)
+		}
+	}
+}

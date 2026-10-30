@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -72,16 +74,54 @@ type room struct {
 type hub struct {
 	mu    sync.Mutex
 	rooms map[string]*room
+	// peers is how many peers are in rooms, across all of them, for the
+	// connection cap. Guarded by mu.
+	peers  int
+	limits limits
 	// ice supplies the ICE servers a peer is welcomed with (see serveWS). A
 	// field so a test can fix the answer instead of setting TURN_SECRET in the
 	// environment.
 	ice func() []iceServer
 }
 
+// limits caps what the hub will hold. The signalling server is public and
+// anything that can reach it can open sockets and invent room names, so each
+// is bounded; the defaults are far beyond any real use (a service is one room
+// with a handful of displays) and exist to stop a flood, not to ration.
+type limits struct {
+	maxRooms        int // rooms alive at once
+	maxPeersPerRoom int // controller plus viewers in one room
+	maxPeers        int // peers in all rooms, i.e. open signalling sockets
+}
+
+const (
+	defaultMaxRooms        = 1000
+	defaultMaxPeersPerRoom = 100
+	defaultMaxPeers        = 2000
+)
+
+// limitsFromEnv reads MAX_ROOMS, MAX_PEERS_PER_ROOM and MAX_PEERS, falling back
+// to the defaults for anything unset or not a positive number.
+func limitsFromEnv() limits {
+	return limits{
+		maxRooms:        envInt("MAX_ROOMS", defaultMaxRooms),
+		maxPeersPerRoom: envInt("MAX_PEERS_PER_ROOM", defaultMaxPeersPerRoom),
+		maxPeers:        envInt("MAX_PEERS", defaultMaxPeers),
+	}
+}
+
+func envInt(key string, fallback int) int {
+	if n, err := strconv.Atoi(os.Getenv(key)); err == nil && n > 0 {
+		return n
+	}
+	return fallback
+}
+
 func newHub() *hub {
 	return &hub{
-		rooms: make(map[string]*room),
-		ice:   func() []iceServer { return iceServers(time.Now()) },
+		rooms:  make(map[string]*room),
+		limits: limitsFromEnv(),
+		ice:    func() []iceServer { return iceServers(time.Now()) },
 	}
 }
 
@@ -129,13 +169,49 @@ func (r *room) peerByID(id string) *peer {
 // for a room somebody else already claimed.
 var errControlDenied = errors.New("control denied")
 
+// errBusy is returned when the hub is at one of its limits, so the peer is
+// turned away rather than admitted.
+var errBusy = errors.New("server busy")
+
+// size is how many peers are in the room. Must be called with r.mu held.
+func (r *room) size() int {
+	n := len(r.viewers)
+	if r.controller != nil {
+		n++
+	}
+	return n
+}
+
 // join adds a peer of the given role to the named room, creating the room
 // if necessary, and returns it. It also fires the join notifications
 // (peer-joined/waiting/viewer-list) that let the controller and viewer(s)
 // discover each other and start negotiating. A controller must present the
-// room's control key; viewers need no key.
+// room's control key; viewers need no key. errBusy means a limit was hit.
 func (h *hub) join(roomName string, rl role, key string, conn *websocket.Conn) (*peer, error) {
-	r := h.roomFor(roomName)
+	// h.mu is held from picking the room until r.mu is held, so leave (which
+	// takes both) cannot delete the room in between and strand this peer in
+	// it. The limits are checked there too, where the counts cannot move.
+	h.mu.Lock()
+	r, existed := h.rooms[roomName]
+	if !existed {
+		if len(h.rooms) >= h.limits.maxRooms {
+			h.mu.Unlock()
+			return nil, errBusy
+		}
+		r = &room{name: roomName, viewers: make(map[string]*peer)}
+		h.rooms[roomName] = r
+	}
+	r.mu.Lock()
+	// A controller replacing the current one adds nobody.
+	adds := rl != roleController || r.controller == nil
+	if adds && (h.peers >= h.limits.maxPeers || r.size() >= h.limits.maxPeersPerRoom) {
+		if !existed {
+			delete(h.rooms, roomName)
+		}
+		r.mu.Unlock()
+		h.mu.Unlock()
+		return nil, errBusy
+	}
 	p := &peer{
 		id:   newPeerID(),
 		role: rl,
@@ -145,7 +221,6 @@ func (h *hub) join(roomName string, rl role, key string, conn *websocket.Conn) (
 		room: r,
 	}
 
-	r.mu.Lock()
 	var evicted *peer
 	var existingViewers []string
 	switch rl {
@@ -158,6 +233,7 @@ func (h *hub) join(roomName string, rl role, key string, conn *websocket.Conn) (
 			r.controllerKey = key
 		case subtle.ConstantTimeCompare([]byte(r.controllerKey), []byte(key)) != 1:
 			r.mu.Unlock()
+			h.mu.Unlock()
 			return nil, errControlDenied
 		}
 
@@ -176,6 +252,10 @@ func (h *hub) join(roomName string, rl role, key string, conn *websocket.Conn) (
 		r.viewers[p.id] = p
 	}
 	controller := r.controller
+	if adds {
+		h.peers++
+	}
+	h.mu.Unlock()
 	r.mu.Unlock()
 
 	if evicted != nil {
@@ -231,6 +311,7 @@ func (h *hub) leave(p *peer) {
 		// controller.
 		if r.controller == p {
 			r.controller = nil
+			h.peers--
 			for _, v := range r.viewers {
 				notify = append(notify, v)
 			}
@@ -238,6 +319,7 @@ func (h *hub) leave(p *peer) {
 	case roleViewer:
 		if r.viewers[p.id] == p {
 			delete(r.viewers, p.id)
+			h.peers--
 			if r.controller != nil {
 				notify = append(notify, r.controller)
 			}

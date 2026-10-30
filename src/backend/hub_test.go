@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -352,5 +353,99 @@ func TestJoinRacesLeave_PeerNeverStrandedInDiscardedRoom(t *testing.T) {
 			t.Fatal("the surviving viewer is in a room the hub no longer knows about")
 		}
 		h.leave(v2)
+	}
+}
+
+// The signalling server is public, so every dimension a stranger can grow is
+// capped: rooms (they invent the names), peers in a room, and sockets overall.
+func TestJoin_RefusesPastTheRoomLimit(t *testing.T) {
+	h := newHub()
+	h.limits.maxRooms = 2
+	mustJoin(t, h, "a", roleViewer, "", newTestConn(t))
+	mustJoin(t, h, "b", roleViewer, "", newTestConn(t))
+
+	if _, err := h.join("c", roleViewer, "", newTestConn(t)); !errors.Is(err, errBusy) {
+		t.Fatalf("a third room: err = %v, want errBusy", err)
+	}
+	h.mu.Lock()
+	n := len(h.rooms)
+	h.mu.Unlock()
+	if n != 2 {
+		t.Errorf("refused join left %d rooms, want 2", n)
+	}
+	// An existing room is still open to newcomers.
+	mustJoin(t, h, "a", roleViewer, "", newTestConn(t))
+}
+
+func TestJoin_RefusesPastThePeerLimitPerRoom(t *testing.T) {
+	h := newHub()
+	h.limits.maxPeersPerRoom = 3
+	c := mustJoin(t, h, "r", roleController, "k", newTestConn(t))
+	mustJoin(t, h, "r", roleViewer, "", newTestConn(t))
+	v2 := mustJoin(t, h, "r", roleViewer, "", newTestConn(t))
+
+	if _, err := h.join("r", roleViewer, "", newTestConn(t)); !errors.Is(err, errBusy) {
+		t.Fatalf("a fourth peer: err = %v, want errBusy", err)
+	}
+	// The controller refreshing swaps itself in and takes no extra seat.
+	c2 := mustJoin(t, h, "r", roleController, "k", newTestConn(t))
+	if c2 == c {
+		t.Fatal("no replacement")
+	}
+	// Another room is not affected.
+	mustJoin(t, h, "other", roleViewer, "", newTestConn(t))
+	// A seat freed by leaving can be taken.
+	h.leave(v2)
+	mustJoin(t, h, "r", roleViewer, "", newTestConn(t))
+}
+
+func TestJoin_RefusesPastTheTotalPeerLimit(t *testing.T) {
+	h := newHub()
+	h.limits.maxPeers = 2
+	a := mustJoin(t, h, "a", roleViewer, "", newTestConn(t))
+	mustJoin(t, h, "b", roleViewer, "", newTestConn(t))
+
+	if _, err := h.join("c", roleViewer, "", newTestConn(t)); !errors.Is(err, errBusy) {
+		t.Fatalf("a third socket: err = %v, want errBusy", err)
+	}
+	h.mu.Lock()
+	_, leaked := h.rooms["c"]
+	h.mu.Unlock()
+	if leaked {
+		t.Error("a refused join left its room behind")
+	}
+	h.leave(a)
+	mustJoin(t, h, "c", roleViewer, "", newTestConn(t))
+}
+
+func TestLimitsFromEnv(t *testing.T) {
+	t.Setenv("MAX_ROOMS", "7")
+	t.Setenv("MAX_PEERS_PER_ROOM", "nonsense")
+	t.Setenv("MAX_PEERS", "-1")
+	got := limitsFromEnv()
+	want := limits{maxRooms: 7, maxPeersPerRoom: defaultMaxPeersPerRoom, maxPeers: defaultMaxPeers}
+	if got != want {
+		t.Errorf("limitsFromEnv() = %+v, want %+v", got, want)
+	}
+}
+
+// A refusal reaches the client as a 1013 close, not as a message kind the
+// client would have to learn.
+func TestServeWS_RefusalIsAClose1013(t *testing.T) {
+	h := newHub()
+	h.limits.maxRooms = 1
+	mustJoin(t, h, "taken", roleViewer, "", newTestConn(t))
+
+	srv := httptest.NewServer(http.HandlerFunc(h.serveWS))
+	t.Cleanup(srv.Close)
+	c, _, err := websocket.DefaultDialer.Dial("ws"+srv.URL[len("http"):]+"/?room=new&role=viewer", nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(time.Second))
+	_, _, err = c.ReadMessage()
+	if !websocket.IsCloseError(err, websocket.CloseTryAgainLater) {
+		t.Fatalf("read error = %v, want a 1013 close", err)
 	}
 }

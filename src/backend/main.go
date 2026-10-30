@@ -165,6 +165,18 @@ func newMux(h *hub, feFS fs.FS) http.Handler {
 	return mux
 }
 
+// newServer is the http.Server the app runs, with the limits a public listener
+// needs: the default MaxHeaderBytes is 1 MiB, and nothing here sends headers
+// anywhere near that.
+func newServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+}
+
 func main() {
 	dev := flag.Bool("dev", false, "serve the frontend from ./dist on disk instead of the embedded copy")
 	addr := flag.String("addr", ":8080", "address to listen on")
@@ -173,11 +185,7 @@ func main() {
 	h := newHub()
 	feFS := frontendFS(*dev)
 
-	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           securityHeaders(newMux(h, feFS), *dev),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	srv := newServer(*addr, securityHeaders(newMux(h, feFS), *dev))
 
 	log.Printf("listening on http://localhost%s", *addr)
 	if err := srv.ListenAndServe(); err != nil {

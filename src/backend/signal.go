@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -96,6 +97,17 @@ func (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p, err := h.join(roomName, rl, key, conn)
+	if errors.Is(err, errBusy) {
+		// 1013 "try again later". No new message kind: a client that does not
+		// know about it just sees the socket close and retries, as it does for
+		// any dropped connection.
+		log.Printf("room %s: refused a %s, server at its limits", roomName, rl)
+		_ = conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseTryAgainLater, "server busy"),
+			time.Now().Add(writeWait))
+		conn.Close()
+		return
+	}
 	if err != nil {
 		log.Printf("room %s: control denied", roomName)
 		_ = conn.WriteMessage(websocket.TextMessage, encode(msgKind{Kind: "denied"}))
