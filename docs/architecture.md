@@ -7,7 +7,7 @@ channels; the server never sees either.
 ```
                    ┌──────────── Go server (:8080) ────────────┐
                    │ /ws   signalling relay, one room per session │
-                   │ /ice  STUN/TURN config                       │
+                   │       (its welcome carries STUN/TURN config) │
                    │ /     the embedded frontend                  │
                    └───────────────────┬──────────────────────────┘
                                        │ SDP/ICE only
@@ -102,7 +102,7 @@ Two things are worth knowing about the shapes rather than the list:
 
 `src/backend/` is four files: `main.go` (wiring, CSP, embedding the frontend),
 `hub.go` (rooms and peers), `signal.go` (the WebSocket relay) and `ice.go`
-(STUN/TURN config).
+(STUN/TURN config, sent in the welcome).
 
 The frontend is split so the parts worth testing can be: each module holding
 arithmetic or state is DOM-free with a `_test.ts` beside it, and its DOM half is

@@ -109,8 +109,13 @@ WebSocket relay, `ice.go` STUN/TURN config.
   client can't route the message to the right per-peer connection, so
   negotiation never completes and the connection sits in "connecting" forever
   with no error anywhere.
-- Server→client kinds: `welcome` (your id), `viewer-list`, `peer-joined`,
-  `peer-left`, `waiting`, `denied`.
+- Server→client kinds: `welcome` (your id and the ICE servers, TURN credentials
+  included — written before anything queued, and the only way they are issued;
+  there is no `/ice` endpoint), `viewer-list`, `peer-joined`, `peer-left`,
+  `waiting`, `denied`.
+- The hub caps rooms, peers per room and total peers (`limits`, env
+  `MAX_ROOMS`/`MAX_PEERS_PER_ROOM`/`MAX_PEERS`); a refusal is a 1013 close, not
+  a new message kind.
 - **A new controller evicts the sitting one** so an operator's refresh
   reconnects instead of orphaning viewers. Two consequences that are easy to get
   wrong, both now covered by tests:

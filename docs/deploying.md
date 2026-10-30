@@ -15,12 +15,17 @@ same trap when building by hand.
 
 Environment, all optional:
 
-| Variable      | Default                        | What it does                               |
-| ------------- | ------------------------------ | ------------------------------------------ |
-| `STUN_URLS`   | `stun:stun.l.google.com:19302` | comma-separated STUN servers               |
-| `TURN_URLS`   | —                              | comma-separated TURN servers; enables TURN |
-| `TURN_SECRET` | —                              | coturn's `static-auth-secret`              |
-| `TURN_TTL`    | `3600`                         | lifetime of an issued credential, seconds  |
+| Variable             | Default                        | What it does                                    |
+| -------------------- | ------------------------------ | ----------------------------------------------- |
+| `STUN_URLS`          | `stun:stun.l.google.com:19302` | comma-separated STUN servers                    |
+| `TURN_URLS`          | —                              | comma-separated TURN servers; enables TURN      |
+| `TURN_SECRET`        | —                              | coturn's `static-auth-secret`                   |
+| `TURN_TTL`           | `3600`                         | lifetime of an issued credential, seconds       |
+| `MAX_ROOMS`          | `1000`                         | most rooms alive at once                        |
+| `MAX_PEERS_PER_ROOM` | `100`                          | most peers (controller and viewers) in one room |
+| `MAX_PEERS`          | `2000`                         | most signalling sockets across all rooms        |
+
+A peer past a limit is closed with status 1013 and its client retries.
 
 The server also takes `-addr` to move off `:8080` and `-dev` to read `dist/`
 from disk instead of the embedded copy.
@@ -35,12 +40,11 @@ Everything else served from the root is a content-hashed asset.
 `frame-ancestors 'self' https://17xande.dev`.
 
 `'self'` is what lets the control page put `/viewer` in its own preview pane.
-The named origin is the project's site, at
-`https://17xande.dev/teleprompter/`, whose live demo frames `/control` and
-`/viewer?room=<id>` side by side so a visitor drives the real app rather than
-watching a recording of it. Under `-dev` the directive also admits
-`http://localhost:*` and `http://127.0.0.1:*`, so that site can be developed
-against a local server; production never sees those.
+The named origin is the project's site, at `https://17xande.dev/teleprompter/`,
+whose live demo frames `/control` and `/viewer?room=<id>` side by side so a
+visitor drives the real app rather than watching a recording of it. Under `-dev`
+the directive also admits `http://localhost:*` and `http://127.0.0.1:*`, so that
+site can be developed against a local server; production never sees those.
 
 If you self-host and want to embed this elsewhere, that is the line to edit, and
 the only one. Framing grants nothing beyond display: a framed control page
@@ -95,9 +99,11 @@ into home NAT to solve what the Oracle box's public IP already solves.
 STUN gets peers connected in most co-located cases. TURN is the fallback for
 networks that block direct peer traffic — guest wifi, client isolation.
 
-The client fetches ICE config from `GET /ice` at connect time, so credentials
-are never hardcoded in the frontend. The server issues short-lived HMAC
-credentials following coturn's `use-auth-secret` scheme:
+The server sends the ICE config in the `welcome` message that opens every
+signalling socket, so credentials are never hardcoded in the frontend and are
+only issued to a peer that has joined a room (there is deliberately no HTTP
+endpoint for them). The server issues short-lived HMAC credentials following
+coturn's `use-auth-secret` scheme:
 
 ```sh
 TURN_URLS="turn:turn.example.com:3478" \
@@ -106,7 +112,7 @@ TURN_TTL=3600 \
 go run .
 ```
 
-With no `TURN_URLS`/`TURN_SECRET` set, `/ice` returns STUN only.
+With no `TURN_URLS`/`TURN_SECRET` set, the welcome carries STUN only.
 
 ## Who can control a room
 
