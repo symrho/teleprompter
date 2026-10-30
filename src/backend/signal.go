@@ -49,8 +49,9 @@ type msgViewerList struct {
 }
 
 type msgWelcome struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
+	Kind       string      `json:"kind"`
+	ID         string      `json:"id"`
+	ICEServers []iceServer `json:"iceServers"`
 }
 
 func encode(v any) []byte {
@@ -104,8 +105,21 @@ func (h *hub) serveWS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("room %s: %s %s joined", roomName, rl, p.id)
 
 	// Tell the peer its own id, so it can stamp/route further signaling and
-	// (as the controller) address messages per viewer.
-	p.send <- encode(msgWelcome{Kind: "welcome", ID: p.id})
+	// (as the controller) address messages per viewer — and hand it the ICE
+	// servers, TURN credentials included, which is why this is the only place
+	// they are issued: to a peer the hub has accepted, not to whoever asks.
+	//
+	// Written straight to the socket rather than queued on p.send, because
+	// join has already queued the viewer-list or peer-joined that makes the
+	// client build its peer connections, and the servers must be known by
+	// then. Safe as the one writer: writePump, which owns every later write,
+	// has not started yet.
+	_ = conn.SetWriteDeadline(time.Now().Add(writeWait))
+	if err := conn.WriteMessage(websocket.TextMessage, encode(msgWelcome{Kind: "welcome", ID: p.id, ICEServers: h.ice()})); err != nil {
+		h.leave(p)
+		conn.Close()
+		return
+	}
 
 	go p.writePump()
 	p.readPump(h)

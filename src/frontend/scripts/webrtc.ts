@@ -42,14 +42,15 @@ function wsURL(
   return `${proto}://${location.host}/ws?${params}`;
 }
 
-async function fetchIceConfig(): Promise<RTCConfiguration> {
-  try {
-    const res = await fetch("/ice");
-    const data = await res.json() as { iceServers: RTCIceServer[] };
-    return { iceServers: data.iceServers };
-  } catch {
-    return { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
-  }
+// Used until the server's welcome arrives, and if it carries no servers. The
+// server hands out the real list (with any TURN credentials) in that welcome,
+// never over an open HTTP endpoint, so only a peer it has accepted gets them.
+const FALLBACK_ICE: RTCConfiguration = {
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+};
+
+function iceFromWelcome(msg: SignalEnvelope): RTCConfiguration {
+  return msg.iceServers?.length ? { iceServers: msg.iceServers } : FALLBACK_ICE;
 }
 
 /**
@@ -85,6 +86,8 @@ interface SignalEnvelope {
   kind?: string;
   from?: string;
   peers?: string[];
+  /** On the welcome only: the ICE servers to build peer connections with. */
+  iceServers?: RTCIceServer[];
   description?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
 }
@@ -515,7 +518,7 @@ export function connectController(
     cb.onViewerLeft?.(id);
   }
 
-  let rtcConfig: RTCConfiguration = { iceServers: [] };
+  let rtcConfig: RTCConfiguration = FALLBACK_ICE;
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -532,51 +535,49 @@ export function connectController(
   }
 
   function connect() {
-    (async () => {
-      rtcConfig = await fetchIceConfig();
-      if (closed) return;
-      ws = new WebSocket(wsURL(room, "controller", key));
-      ws.addEventListener("open", () => cb.onSignalingStatus?.("connected"));
-      ws.addEventListener("close", scheduleRetry);
-      ws.addEventListener("error", scheduleRetry);
-      ws.addEventListener("message", async (e) => {
-        const msg = JSON.parse(e.data) as SignalEnvelope;
-        switch (msg.kind) {
-          case "welcome":
-            return;
-          case "denied":
-            // Someone else holds this room's control key. Retrying would
-            // only be refused again, so stop and surface it.
-            closed = true;
-            cb.onSignalingStatus?.("denied");
-            return;
-          case "viewer-list": {
-            // The server's authoritative membership, sent on every (re)connect
-            // — so it has to be *reconciled*, not merely added to. This used to
-            // be a bare forEach(addViewer), and the peers it left behind were
-            // invisible until someone noticed a display that had gone hours
-            // ago still listed: a dropped signalling socket is usually *why* a
-            // peer connection failed, so the reconnect arrived with a list that
-            // no longer mentioned the dead display and nothing removed it.
-            // addViewer early-returns on an id it already has, so the stale
-            // link was never even renegotiated.
-            const present = new Set(msg.peers ?? []);
-            for (const id of [...links.keys()]) {
-              if (!present.has(id)) removeViewer(id);
-            }
-            present.forEach(addViewer);
-            return;
+    if (closed) return;
+    ws = new WebSocket(wsURL(room, "controller", key));
+    ws.addEventListener("open", () => cb.onSignalingStatus?.("connected"));
+    ws.addEventListener("close", scheduleRetry);
+    ws.addEventListener("error", scheduleRetry);
+    ws.addEventListener("message", async (e) => {
+      const msg = JSON.parse(e.data) as SignalEnvelope;
+      switch (msg.kind) {
+        case "welcome":
+          rtcConfig = iceFromWelcome(msg);
+          return;
+        case "denied":
+          // Someone else holds this room's control key. Retrying would
+          // only be refused again, so stop and surface it.
+          closed = true;
+          cb.onSignalingStatus?.("denied");
+          return;
+        case "viewer-list": {
+          // The server's authoritative membership, sent on every (re)connect
+          // — so it has to be *reconciled*, not merely added to. This used to
+          // be a bare forEach(addViewer), and the peers it left behind were
+          // invisible until someone noticed a display that had gone hours
+          // ago still listed: a dropped signalling socket is usually *why* a
+          // peer connection failed, so the reconnect arrived with a list that
+          // no longer mentioned the dead display and nothing removed it.
+          // addViewer early-returns on an id it already has, so the stale
+          // link was never even renegotiated.
+          const present = new Set(msg.peers ?? []);
+          for (const id of [...links.keys()]) {
+            if (!present.has(id)) removeViewer(id);
           }
-          case "peer-joined":
-            if (msg.from) addViewer(msg.from);
-            return;
-          case "peer-left":
-            if (msg.from) removeViewer(msg.from);
-            return;
+          present.forEach(addViewer);
+          return;
         }
-        if (msg.from) await links.get(msg.from)?.onSignal(msg);
-      });
-    })();
+        case "peer-joined":
+          if (msg.from) addViewer(msg.from);
+          return;
+        case "peer-left":
+          if (msg.from) removeViewer(msg.from);
+          return;
+      }
+      if (msg.from) await links.get(msg.from)?.onSignal(msg);
+    });
   }
 
   connect();
@@ -637,7 +638,7 @@ export function connectViewer(room: string, cb: ViewerCallbacks): ViewerLink {
   let link: Link | null = null;
   let ws: WebSocket | null = null;
   let controllerID: string | null = null;
-  let rtcConfig: RTCConfiguration = { iceServers: [] };
+  let rtcConfig: RTCConfiguration = FALLBACK_ICE;
   let scrollSeq = 0;
   let closed = false;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -659,59 +660,57 @@ export function connectViewer(room: string, cb: ViewerCallbacks): ViewerLink {
   }
 
   function connect() {
-    (async () => {
-      rtcConfig = await fetchIceConfig();
-      if (closed) return;
-      ws = new WebSocket(wsURL(room, "viewer"));
-      ws.addEventListener("close", scheduleRetry);
-      ws.addEventListener("error", scheduleRetry);
-      ws.addEventListener("message", async (e) => {
-        const msg = JSON.parse(e.data) as SignalEnvelope;
-        switch (msg.kind) {
-          case "welcome":
-            return;
-          case "waiting":
-            cb.onStatus?.("waiting");
-            return;
-          case "peer-joined":
-            if (!msg.from) return;
-            // A controller reconnecting replaces the previous one; drop the
-            // old peer connection rather than leaking it and its transports.
-            link?.close();
-            controllerID = msg.from;
-            cb.onStatus?.("connecting");
-            link = makeLink({
-              polite: true, // the viewer always yields to the controller's offer
-              rtcConfig,
-              sendSignal: (m) =>
-                ws?.send(JSON.stringify({ ...m, to: controllerID })),
-              onScroll: (r, s) => cb.onScroll?.(r, s),
-              onControl: (m) => cb.onControl?.(m),
-              onFile: (n, d) => cb.onFile?.(n, d),
-              onStateChange: (state) => {
-                if (state === "connected") cb.onStatus?.("connected");
-                else if (state === "disconnected" || state === "failed") {
-                  cb.onStatus?.("disconnected");
-                }
-              },
-            });
-            for (const msg of pendingControl.splice(0)) link.sendControl(msg);
-            return;
-          case "peer-left":
-            // Only act on the departure of the controller we're actually
-            // connected to. An evicted controller's peer-left can arrive
-            // after its replacement's peer-joined, and tearing down on that
-            // would kill the link we just built to the new controller.
-            if (msg.from && msg.from !== controllerID) return;
-            link?.close();
-            link = null;
-            controllerID = null;
-            cb.onStatus?.("waiting");
-            return;
-        }
-        await link?.onSignal(msg);
-      });
-    })();
+    if (closed) return;
+    ws = new WebSocket(wsURL(room, "viewer"));
+    ws.addEventListener("close", scheduleRetry);
+    ws.addEventListener("error", scheduleRetry);
+    ws.addEventListener("message", async (e) => {
+      const msg = JSON.parse(e.data) as SignalEnvelope;
+      switch (msg.kind) {
+        case "welcome":
+          rtcConfig = iceFromWelcome(msg);
+          return;
+        case "waiting":
+          cb.onStatus?.("waiting");
+          return;
+        case "peer-joined":
+          if (!msg.from) return;
+          // A controller reconnecting replaces the previous one; drop the
+          // old peer connection rather than leaking it and its transports.
+          link?.close();
+          controllerID = msg.from;
+          cb.onStatus?.("connecting");
+          link = makeLink({
+            polite: true, // the viewer always yields to the controller's offer
+            rtcConfig,
+            sendSignal: (m) =>
+              ws?.send(JSON.stringify({ ...m, to: controllerID })),
+            onScroll: (r, s) => cb.onScroll?.(r, s),
+            onControl: (m) => cb.onControl?.(m),
+            onFile: (n, d) => cb.onFile?.(n, d),
+            onStateChange: (state) => {
+              if (state === "connected") cb.onStatus?.("connected");
+              else if (state === "disconnected" || state === "failed") {
+                cb.onStatus?.("disconnected");
+              }
+            },
+          });
+          for (const msg of pendingControl.splice(0)) link.sendControl(msg);
+          return;
+        case "peer-left":
+          // Only act on the departure of the controller we're actually
+          // connected to. An evicted controller's peer-left can arrive
+          // after its replacement's peer-joined, and tearing down on that
+          // would kill the link we just built to the new controller.
+          if (msg.from && msg.from !== controllerID) return;
+          link?.close();
+          link = null;
+          controllerID = null;
+          cb.onStatus?.("waiting");
+          return;
+      }
+      await link?.onSignal(msg);
+    });
   }
 
   connect();

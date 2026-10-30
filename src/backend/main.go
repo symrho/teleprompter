@@ -142,19 +142,11 @@ func securityHeaders(next http.Handler, dev bool) http.Handler {
 	})
 }
 
-func main() {
-	dev := flag.Bool("dev", false, "serve the frontend from ./dist on disk instead of the embedded copy")
-	addr := flag.String("addr", ":8080", "address to listen on")
-	flag.Parse()
-
-	h := newHub()
-
-	feFS := frontendFS(*dev)
-	fe := http.FileServer(http.FS(feFS))
-
+// newMux routes the app: the signalling socket, the two pages and the
+// frontend's static files.
+func newMux(h *hub, feFS fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", h.serveWS)
-	mux.HandleFunc("/ice", handleICE)
 	// The two pages, at paths worth typing. Exact patterns, so they do not
 	// shadow the hashed assets the file server below still has to serve.
 	mux.Handle("/control", pageHandler(feFS, "index.html"))
@@ -169,11 +161,21 @@ func main() {
 		}
 		http.Redirect(w, r, target, http.StatusFound)
 	})
-	mux.Handle("/", fe)
+	mux.Handle("/", http.FileServer(http.FS(feFS)))
+	return mux
+}
+
+func main() {
+	dev := flag.Bool("dev", false, "serve the frontend from ./dist on disk instead of the embedded copy")
+	addr := flag.String("addr", ":8080", "address to listen on")
+	flag.Parse()
+
+	h := newHub()
+	feFS := frontendFS(*dev)
 
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           securityHeaders(mux, *dev),
+		Handler:           securityHeaders(newMux(h, feFS), *dev),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

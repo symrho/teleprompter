@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -71,9 +72,18 @@ type room struct {
 type hub struct {
 	mu    sync.Mutex
 	rooms map[string]*room
+	// ice supplies the ICE servers a peer is welcomed with (see serveWS). A
+	// field so a test can fix the answer instead of setting TURN_SECRET in the
+	// environment.
+	ice func() []iceServer
 }
 
-func newHub() *hub { return &hub{rooms: make(map[string]*room)} }
+func newHub() *hub {
+	return &hub{
+		rooms: make(map[string]*room),
+		ice:   func() []iceServer { return iceServers(time.Now()) },
+	}
+}
 
 func (h *hub) roomFor(name string) *room {
 	h.mu.Lock()

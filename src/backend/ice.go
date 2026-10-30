@@ -4,8 +4,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
-	"encoding/json"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -19,10 +17,15 @@ type iceServer struct {
 	Credential string   `json:"credential,omitempty"`
 }
 
-// iceServers builds the ICE configuration handed to clients. STUN is always
-// included; TURN is added only when TURN_URLS and TURN_SECRET are set, using
-// short-lived HMAC credentials (the coturn "use-auth-secret" / TURN REST API
-// scheme). Credentials are never long-lived and never baked into the frontend.
+// iceServers builds the ICE configuration a client is welcomed with over the
+// signalling socket (see hub.join). It is deliberately not an HTTP endpoint:
+// anything unauthenticated that mints TURN credentials is a free relay for
+// whoever finds it.
+//
+// STUN is always included; TURN is added only when TURN_URLS and TURN_SECRET
+// are set, using short-lived HMAC credentials (the coturn "use-auth-secret" /
+// TURN REST API scheme). Credentials are never long-lived and never baked into
+// the frontend.
 //
 // Env:
 //
@@ -73,12 +76,4 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// handleICE returns fresh ICE servers (with ephemeral TURN credentials) for a
-// client about to open a peer connection.
-func handleICE(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(map[string]any{"iceServers": iceServers(time.Now())})
 }
