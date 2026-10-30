@@ -54,5 +54,6 @@ proxy:
 #     secret:
 #       - TURN_SECRET
 # and put TURN_SECRET=<coturn static-auth-secret> in the gitignored .env, then
-# add `TURN_SECRET=$TURN_SECRET` to .kamal/secrets (Kamal expands $VAR in secret
-# values). STUN_URLS and TURN_TTL (seconds, default 3600) go under `clear` too.
+# add `TURN_SECRET=$(sed -n 's/^TURN_SECRET=//p' .env | head -n 1)` to
+# .kamal/secrets. Kamal does not load .env itself: a bare $TURN_SECRET would read
+# the shell's environment and come out empty, leaving TURN silently off. STUN_URLS and TURN_TTL (seconds, default 3600) go under `clear` too.

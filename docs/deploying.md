@@ -142,8 +142,11 @@ needed: `TURN_SECRET` alone is ignored.
 
 In the Kamal deploy, set `TURN_URLS` (and `STUN_URLS`/`TURN_TTL` if wanted)
 under `env.clear` in `config/deploy.yml`, list `TURN_SECRET` under `env.secret`,
-put its value in the gitignored `.env`, and add `TURN_SECRET=$TURN_SECRET` to
-`.kamal/secrets` (Kamal expands `$VAR` in secret values). Then `make deploy`.
+put its value in the gitignored `.env`, and add
+`TURN_SECRET=$(sed -n 's/^TURN_SECRET=//p' .env | head -n 1)` to `.kamal/secrets`.
+Kamal does not load `.env` itself, so a bare `TURN_SECRET=$TURN_SECRET` would read
+your shell's environment, come out empty, and leave TURN silently off. Then
+`make deploy`.
 
 ## Who can control a room
 
