@@ -180,14 +180,22 @@ func newServer(addr string, handler http.Handler) *http.Server {
 func main() {
 	dev := flag.Bool("dev", false, "serve the frontend from ./dist on disk instead of the embedded copy")
 	addr := flag.String("addr", ":8080", "address to listen on")
+	// CUSTOM (symrho fork): the local agent API. See agentapi.go.
+	apiLAN := flag.Bool("api-lan", false, "accept agent API requests from other hosts (needs -api-token)")
+	apiToken := flag.String("api-token", os.Getenv("TELEPROMPTER_API_TOKEN"), "bearer token for the agent API (default $TELEPROMPTER_API_TOKEN)")
 	flag.Parse()
+	if *apiLAN && *apiToken == "" {
+		log.Fatal("-api-lan needs a token: pass -api-token or set TELEPROMPTER_API_TOKEN")
+	}
 
 	h := newHub()
 	feFS := frontendFS(*dev)
 
-	srv := newServer(*addr, securityHeaders(newMux(h, feFS), *dev))
+	agent := newAgentAPI(agentConfig{token: *apiToken, allowLAN: *apiLAN})
+	srv := newServer(*addr, securityHeaders(agent.wrap(newMux(h, feFS)), *dev))
 
 	log.Printf("listening on http://localhost%s", *addr)
+	logLANAddresses(*addr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}

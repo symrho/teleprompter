@@ -362,3 +362,15 @@ export function restoreEditor(
   clearMount(el);
   return createEditor(el, () => Wordgard.create({ parent: el, state }));
 }
+
+/**
+ * CUSTOM (symrho fork): a stored document's content, built from HTML.
+ *
+ * The agent API loads a script by writing a document and opening it through
+ * DocControls' ordinary "load" path, so it needs the same JSON a save
+ * produces. A state rather than an editor: nothing has to be mounted.
+ */
+export function editorJSONFromHtml(html: string): string {
+  const state = GardState.create({ doc: html, config: buildConfig() });
+  return JSON.stringify(state.toJSON({ history: history.field }));
+}

@@ -123,6 +123,25 @@ export class DocControls {
   }
 
   /**
+   * CUSTOM (symrho fork): write a document by name and open it.
+   *
+   * For the agent API. A document with this name is replaced, so an agent
+   * reloading its script does not pile up copies; any other name creates a
+   * new one, so the operator's own scripts are never overwritten. Opening
+   * goes through `load`, the same path the dropdown uses.
+   */
+  putDocument(name: string, content: string): string {
+    const existing = this.storage.list().find(([, d]) => d.name === name);
+    const id = existing ? existing[0] : this.storage.create(name);
+    this.storage.setCurrent(id);
+    this.storage.setContent(content);
+    this.storage.flush();
+    this.#renderItems();
+    this.load(id);
+    return id;
+  }
+
+  /**
    * Ask what to call the new document, prefilled with the generated name.
    *
    * Prefilled *and selected*, which is the whole design: Enter alone keeps the
