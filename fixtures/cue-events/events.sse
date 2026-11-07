@@ -1,0 +1,48 @@
+event: playback
+data: {"state":"reset","at":"2026-11-10T07:41:00.000Z","position":0}
+
+event: playback
+data: {"state":"running","at":"2026-11-10T07:41:00.100Z","position":0}
+
+event: cue
+data: {"id":"1","label":"HOOK","text":"[CUE 1 · HOOK]","index":0,"at":"2026-11-10T07:41:00.400Z","position":0.015}
+
+event: cue
+data: {"id":"1B","label":"NAME","text":"[CUE 1B · NAME]","index":1,"at":"2026-11-10T07:41:02.800Z","position":0.135}
+
+event: cue
+data: {"id":"2","label":"CORPORATE","text":"[CUE 2 · CORPORATE]","index":2,"at":"2026-11-10T07:41:05.100Z","position":0.25}
+
+event: cue
+data: {"id":"3","label":"BUILD","text":"[CUE 3 · BUILD]","index":3,"at":"2026-11-10T07:41:07.500Z","position":0.37}
+
+event: cue
+data: {"id":"3B","label":"GIT LOG","text":"[CUE 3B · GIT LOG]","index":4,"at":"2026-11-10T07:41:09.900Z","position":0.49}
+
+event: playback
+data: {"state":"paused","at":"2026-11-10T07:41:10.200Z","position":0.5}
+
+event: playback
+data: {"state":"running","at":"2026-11-10T07:41:11.300Z","position":0.3}
+
+event: cue
+data: {"id":"3","label":"BUILD","text":"[CUE 3 · BUILD]","index":3,"at":"2026-11-10T07:41:12.700Z","position":0.37}
+
+event: cue
+data: {"id":"3B","label":"GIT LOG","text":"[CUE 3B · GIT LOG]","index":4,"at":"2026-11-10T07:41:15.100Z","position":0.49}
+
+event: cue
+data: {"id":"1","label":"CALM","text":"[CUE 1 · CALM]","index":5,"at":"2026-11-10T07:41:17.400Z","position":0.605}
+
+event: cue
+data: {"id":"4","label":"POINT","text":"[CUE 4 · POINT]","index":6,"at":"2026-11-10T07:41:19.800Z","position":0.725}
+
+event: cue
+data: {"id":"1","label":"CALM","text":"[CUE 1 · CALM]","index":7,"at":"2026-11-10T07:41:22.100Z","position":0.84}
+
+event: cue
+data: {"id":"E","label":"END CARD · HOLD 3 S, THEN STOP","text":"[CUE E · END CARD · HOLD 3 S, THEN STOP]","index":8,"at":"2026-11-10T07:41:24.500Z","position":0.96}
+
+event: playback
+data: {"state":"paused","at":"2026-11-10T07:41:25.400Z","position":1}
+

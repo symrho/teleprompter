@@ -5,11 +5,13 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -327,5 +329,265 @@ func TestAgentLeavesTheAppAlone(t *testing.T) {
 	resp.Body.Close()
 	if string(b) != "app" {
 		t.Fatalf("non-API path was intercepted: %q", b)
+	}
+}
+
+// openEvents subscribes to /api/events and returns a reader of its lines,
+// having already read past the stream's opening retry hint and comment.
+func openEvents(t *testing.T, srv *httptest.Server) (*bufio.Reader, func()) {
+	t.Helper()
+	req, _ := http.NewRequest("GET", srv.URL+"/api/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("events: %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("content type %q", ct)
+	}
+	rd := bufio.NewReader(resp.Body)
+	for _, want := range []string{"retry: 1000\n", ": connected\n", "\n"} {
+		line, err := rd.ReadString('\n')
+		if err != nil || line != want {
+			t.Fatalf("prelude: got %q (%v), want %q", line, err, want)
+		}
+	}
+	return rd, func() { resp.Body.Close() }
+}
+
+// readFrame reads one event (up to its blank line), skipping comments.
+func readFrame(t *testing.T, rd *bufio.Reader) string {
+	t.Helper()
+	type res struct {
+		s   string
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		var b strings.Builder
+		for {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				ch <- res{b.String(), err}
+				return
+			}
+			if strings.HasPrefix(line, ":") {
+				continue
+			}
+			b.WriteString(line)
+			if line == "\n" {
+				ch <- res{b.String(), nil}
+				return
+			}
+		}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.Fatalf("reading frame: %v (got %q)", r.err, r.s)
+		}
+		return r.s
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event arrived")
+		return ""
+	}
+}
+
+// waitSubscribers waits until the server has registered n subscribers, since
+// a page event published before that reaches nobody.
+func waitSubscribers(t *testing.T, a *agentAPI, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		a.subsMu.Lock()
+		got := len(a.subs)
+		a.subsMu.Unlock()
+		if got == n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("never reached %d subscribers", n)
+}
+
+func TestEventsRelayThePagesEventsToEverySubscriber(t *testing.T) {
+	a := testAPI(agentConfig{})
+	srv := serve(a)
+	defer srv.Close()
+	page := connectPage(t, srv, nil)
+	one, close1 := openEvents(t, srv)
+	defer close1()
+	two, close2 := openEvents(t, srv)
+	defer close2()
+	waitSubscribers(t, a, 2)
+
+	// Pretty-printed on purpose: SSE ends a field at a newline, so the server
+	// has to compact it.
+	_ = page.conn.WriteMessage(websocket.TextMessage, []byte(`{"event":"cue","data":{
+		"id":"1B","label":"NAME","text":"[CUE 1B · NAME]","index":1,
+		"at":"2026-11-10T07:41:02.120Z","position":0.083}}`))
+	want := "event: cue\n" +
+		`data: {"id":"1B","label":"NAME","text":"[CUE 1B · NAME]","index":1,"at":"2026-11-10T07:41:02.120Z","position":0.083}` +
+		"\n\n"
+	for _, rd := range []*bufio.Reader{one, two} {
+		if got := readFrame(t, rd); got != want {
+			t.Fatalf("got %q\nwant %q", got, want)
+		}
+	}
+}
+
+func TestEventsDropWhatThePageMayNotPublish(t *testing.T) {
+	a := testAPI(agentConfig{})
+	srv := serve(a)
+	defer srv.Close()
+	page := connectPage(t, srv, nil)
+	rd, done := openEvents(t, srv)
+	defer done()
+	waitSubscribers(t, a, 1)
+
+	for _, m := range []string{
+		`{"event":"shell","data":{"cmd":"rm"}}`, // not an event kind
+		`{"event":"cue","data":"text"}`,         // data is not an object
+		`{"event":"cue"}`,                       // no data
+		`{"event":"playback\ndata: {}","data":{}}`,
+		`not json`,
+	} {
+		_ = page.conn.WriteMessage(websocket.TextMessage, []byte(m))
+	}
+	_ = page.conn.WriteMessage(websocket.TextMessage,
+		[]byte(`{"event":"playback","data":{"state":"paused","at":"x","position":0.5}}`))
+	want := "event: playback\ndata: {\"state\":\"paused\",\"at\":\"x\",\"position\":0.5}\n\n"
+	if got := readFrame(t, rd); got != want {
+		t.Fatalf("got %q, want only the valid one %q", got, want)
+	}
+}
+
+func TestEventsStillLetRepliesThrough(t *testing.T) {
+	srv := serve(testAPI(agentConfig{}))
+	defer srv.Close()
+	connectPage(t, srv, func(r bridgeRequest) bridgeReply {
+		return bridgeReply{ID: r.ID, OK: true, Result: json.RawMessage(`{"state":"READY"}`)}
+	})
+	code, out := do(t, "GET", srv.URL+"/api/status", "", nil)
+	if code != 200 || out["state"] != "READY" {
+		t.Fatalf("got %d %v", code, out)
+	}
+}
+
+func TestEventsFollowTheAPIsAccessRules(t *testing.T) {
+	srv := serve(testAPI(agentConfig{}))
+	defer srv.Close()
+	for _, c := range []struct {
+		name   string
+		method string
+		hdr    map[string]string
+		status int
+		code   string
+	}{
+		{"cross-origin", "GET", map[string]string{"Origin": "https://evil.example"}, 403, "forbidden_origin"},
+		{"rebinding", "GET", map[string]string{"Host": "evil.example"}, 403, "forbidden_host"},
+		{"not GET", "POST", nil, 405, "method_not_allowed"},
+	} {
+		code, out := do(t, c.method, srv.URL+"/api/events", "", c.hdr)
+		if code != c.status || errCode(out) != c.code {
+			t.Errorf("%s: got %d %v", c.name, code, out)
+		}
+	}
+
+	tok := serve(testAPI(agentConfig{token: "s3cret"}))
+	defer tok.Close()
+	code, out := do(t, "GET", tok.URL+"/api/events", "", nil)
+	if code != 401 || errCode(out) != "unauthorized" {
+		t.Fatalf("no token: got %d %v", code, out)
+	}
+}
+
+func TestEventsOpenWithNoControlPage(t *testing.T) {
+	// A watcher may start before the operator opens the control page; the
+	// stream waits rather than refusing.
+	a := testAPI(agentConfig{})
+	srv := serve(a)
+	defer srv.Close()
+	rd, done := openEvents(t, srv)
+	defer done()
+	waitSubscribers(t, a, 1)
+	page := connectPage(t, srv, nil)
+	_ = page.conn.WriteMessage(websocket.TextMessage,
+		[]byte(`{"event":"playback","data":{"state":"running","at":"x","position":0}}`))
+	if got := readFrame(t, rd); !strings.HasPrefix(got, "event: playback\n") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEventsKeepAliveWhileQuiet(t *testing.T) {
+	a := testAPI(agentConfig{})
+	a.keepalive = 20 * time.Millisecond
+	srv := serve(a)
+	defer srv.Close()
+	rd, done := openEvents(t, srv)
+	defer done()
+	line, err := rd.ReadString('\n')
+	if err != nil || line != ": keepalive\n" {
+		t.Fatalf("got %q %v", line, err)
+	}
+}
+
+func TestEventsCutLooseASubscriberThatStoppedReading(t *testing.T) {
+	a := testAPI(agentConfig{})
+	stuck := a.subscribe()
+	live := a.subscribe()
+	for i := 0; i <= eventBuffer; i++ {
+		a.publish("playback", json.RawMessage(`{"state":"running"}`))
+		<-live // the live one keeps up
+	}
+	if _, ok := a.subs[stuck]; ok {
+		t.Fatal("a full subscriber was kept, and would block every publish")
+	}
+	if _, ok := a.subs[live]; !ok {
+		t.Fatal("the subscriber that kept up was dropped")
+	}
+	// Drained, its channel is closed: that is how serveEvents learns to end.
+	for range stuck {
+	}
+	a.unsubscribe(stuck) // and unsubscribing after that is harmless
+	a.unsubscribe(live)
+}
+
+// The fixture in fixtures/cue-events: the events the control page pushes for
+// a rehearsal of the launch script, and the stream the server must make of
+// them, byte for byte. cues_test.ts holds the other half — that events.json is
+// what the page's cue tracker produces.
+func TestEventsFixtureStreamsAsRecorded(t *testing.T) {
+	raw, err := os.ReadFile("../../fixtures/cue-events/events.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile("../../fixtures/cue-events/events.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []json.RawMessage
+	if err := json.Unmarshal(raw, &events); err != nil {
+		t.Fatal(err)
+	}
+
+	a := testAPI(agentConfig{})
+	srv := serve(a)
+	defer srv.Close()
+	page := connectPage(t, srv, nil)
+	rd, done := openEvents(t, srv)
+	defer done()
+	waitSubscribers(t, a, 1)
+	for _, e := range events {
+		_ = page.conn.WriteMessage(websocket.TextMessage, e)
+	}
+	var got strings.Builder
+	for range events {
+		got.WriteString(readFrame(t, rd))
+	}
+	if got.String() != string(want) {
+		t.Fatalf("stream differs from events.sse:\n%s", got.String())
 	}
 }

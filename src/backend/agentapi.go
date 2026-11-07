@@ -26,6 +26,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -123,10 +124,21 @@ type agentAPI struct {
 	isLocal func(net.IP) bool
 	// hostOK reports whether a Host header names this machine.
 	hostOK func(string) bool
+
+	// Subscribers to GET /api/events. See events below.
+	subsMu sync.Mutex
+	subs   map[chan []byte]struct{}
+	// How often an idle event stream sends a comment, so a proxy or a client
+	// with a read timeout does not take a quiet stretch of script for a dead
+	// connection. A field so tests need not wait for it.
+	keepalive time.Duration
 }
 
 func newAgentAPI(cfg agentConfig) *agentAPI {
-	return &agentAPI{cfg: cfg, isLocal: isLocalIP, hostOK: isLocalHost}
+	return &agentAPI{
+		cfg: cfg, isLocal: isLocalIP, hostOK: isLocalHost,
+		subs: map[chan []byte]struct{}{}, keepalive: 15 * time.Second,
+	}
 }
 
 // wrap serves /api/* from the agent API and everything else from next.
@@ -250,6 +262,16 @@ func (a *agentAPI) authorise(r *http.Request) (int, string, string) {
 func (a *agentAPI) serveAPI(w http.ResponseWriter, r *http.Request) {
 	if status, code, msg := a.authorise(r); status != 0 {
 		writeAgentError(w, status, code, msg)
+		return
+	}
+	if r.URL.Path == "/api/events" {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeAgentError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+				fmt.Sprintf("%s is not supported on %s", r.Method, r.URL.Path))
+			return
+		}
+		a.serveEvents(w, r)
 		return
 	}
 	if r.URL.Path == "/api/health" && r.Method == http.MethodGet {
@@ -473,7 +495,12 @@ func (a *agentAPI) serveBridge(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var reply bridgeReply
-		if json.Unmarshal(data, &reply) != nil || reply.ID == "" {
+		if json.Unmarshal(data, &reply) != nil {
+			continue
+		}
+		if reply.ID == "" {
+			// No id: not a reply but an event the page is pushing.
+			a.publishFromPage(data)
 			continue
 		}
 		b.mu.Lock()
@@ -504,6 +531,134 @@ func logLANAddresses(addr string) {
 	for _, a := range addrs {
 		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil && !n.IP.IsLoopback() {
 			log.Printf("  or http://%s:%s/control", n.IP, port)
+		}
+	}
+}
+
+// Events: GET /api/events.
+//
+// Server-Sent Events, pushed by the control page over the bridge as
+// {event, data} with no id. The page decides when a cue has crossed the
+// reading line (custom/cues.ts) — it is the only thing that knows where the
+// script is — so the server only checks the shape and fans it out. As with the
+// rest of this API it holds no prompter state: nothing is replayed to a late
+// subscriber, because a cue is a moment, and a moment already past is not one
+// a scene should switch on.
+
+// eventKinds is the fixed set of events a page may publish. Anything else is
+// dropped, so a page cannot put arbitrary event names on the stream.
+var eventKinds = map[string]bool{"cue": true, "playback": true}
+
+// eventBuffer is how many events a subscriber may fall behind by. A script has
+// tens of cues, so this is only reached by a client that has stopped reading;
+// that one is disconnected rather than allowed to block anyone else, and an
+// EventSource reconnects on its own.
+const eventBuffer = 64
+
+func (a *agentAPI) publishFromPage(raw []byte) {
+	var msg struct {
+		Event string          `json:"event"`
+		Data  json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(raw, &msg) != nil || !eventKinds[msg.Event] {
+		return
+	}
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(msg.Data, &probe) != nil || probe == nil {
+		return
+	}
+	a.publish(msg.Event, msg.Data)
+}
+
+// sseFrame is one event as it goes on the wire. The data is compacted first:
+// SSE ends a field at a newline, and compact JSON has none.
+func sseFrame(event string, data json.RawMessage) ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteString("event: " + event + "\ndata: ")
+	if err := json.Compact(&buf, data); err != nil {
+		return nil, err
+	}
+	buf.WriteString("\n\n")
+	return buf.Bytes(), nil
+}
+
+func (a *agentAPI) publish(event string, data json.RawMessage) {
+	frame, err := sseFrame(event, data)
+	if err != nil {
+		return
+	}
+	a.subsMu.Lock()
+	defer a.subsMu.Unlock()
+	for ch := range a.subs {
+		select {
+		case ch <- frame:
+		default:
+			// Fallen too far behind: cut it loose (see eventBuffer).
+			delete(a.subs, ch)
+			close(ch)
+		}
+	}
+}
+
+func (a *agentAPI) subscribe() chan []byte {
+	ch := make(chan []byte, eventBuffer)
+	a.subsMu.Lock()
+	a.subs[ch] = struct{}{}
+	a.subsMu.Unlock()
+	return ch
+}
+
+// unsubscribe is safe after publish has already dropped the channel: only the
+// side that removes it from the map closes it.
+func (a *agentAPI) unsubscribe(ch chan []byte) {
+	a.subsMu.Lock()
+	defer a.subsMu.Unlock()
+	if _, ok := a.subs[ch]; ok {
+		delete(a.subs, ch)
+		close(ch)
+	}
+}
+
+func (a *agentAPI) serveEvents(w http.ResponseWriter, r *http.Request) {
+	rc := http.NewResponseController(w)
+	ch := a.subscribe()
+	defer a.unsubscribe(ch)
+
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	// Every write gets a deadline: the server has no WriteTimeout (a stream is
+	// meant to last), so without one a client that stops reading would hold
+	// this goroutine until TCP gave up.
+	write := func(b []byte) bool {
+		_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if _, err := w.Write(b); err != nil {
+			return false
+		}
+		return rc.Flush() == nil
+	}
+	// The retry hint keeps an EventSource's reconnect quick; the comment gets
+	// the headers to the client now rather than with the first cue.
+	if !write([]byte("retry: 1000\n: connected\n\n")) {
+		return
+	}
+	t := time.NewTicker(a.keepalive)
+	defer t.Stop()
+	for {
+		select {
+		case frame, ok := <-ch:
+			if !ok || !write(frame) {
+				return
+			}
+		case <-t.C:
+			if !write([]byte(": keepalive\n\n")) {
+				return
+			}
+		case <-r.Context().Done():
+			return
 		}
 	}
 }

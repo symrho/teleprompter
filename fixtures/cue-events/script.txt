@@ -1,0 +1,33 @@
+[CUE 1 · HOOK]
+
+I joined LinkedIn in December 2008. This is my first post. Ever.
+
+[CUE 1B · NAME]
+
+A year ago today I took voluntary redundancy from JLR, after 20 years in corporate. [PAUSE] If your VR was approved this week, or you're thinking of starting something on the side, this one's for you.
+
+[CUE 2 · CORPORATE]
+
+For twenty years I built software that tests software. Then I saw what AI was about to do to software, and I wanted to be at the edge of it.
+
+[CUE 3 · BUILD]
+
+So I asked people in my network one question: where would AI actually help you? Accountants told me: classifying and matching every bank transaction. That answer became the product.
+
+[CUE 3B · GIT LOG]
+
+Thirteen and a half thousand commits later, most of them written by AI agents I direct, it has four paying customers.
+
+[CUE 1 · CALM]
+
+In July every test passed, and the system still put the wrong name on a customer's bank fee. So I built the checks that let me trust the agents.
+
+[CUE 4 · POINT]
+
+If you really know your field, building the product is no longer what stops you. Trust is. That's what I want to help founders with, whether that's a coffee and some advice, or building it together.
+
+[CUE 1 · CALM]
+
+If your VR was just approved, or you've had an idea sitting in a drawer, follow along. Or just message me.
+
+[CUE E · END CARD · HOLD 3 S, THEN STOP]

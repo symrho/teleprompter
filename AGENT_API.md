@@ -51,6 +51,7 @@ These rules always apply:
 | POST | `/api/control/resume` | The same as start. Named for agents that think in pause and resume. |
 | POST | `/api/control/start-over` | Back to the beginning, paused. `{"run": true}` starts it again. |
 | POST | `/api/control/goto` | `{"position": 0..1}` or `{"percent": 0..100}`. |
+| GET | `/api/events` | Server-Sent Events: a cue line crossing the reading line, and start, pause and start-over. See [Events](#events). |
 
 ## Schemas
 
@@ -166,7 +167,7 @@ straight away if the preset is showing. The response is the new config:
   "script": {
     "document": "Launch video", "loadedByAgent": true,
     "words": 193, "targetWpm": 130, "estimatedSeconds": 89.1, "estimatedDuration": "1:29",
-    "remainingSeconds": 89, "suggestedSpeed": 73.1
+    "remainingSeconds": 89, "suggestedSpeed": 73.1, "cues": 9
   },
   "liveEditing": true
 }
@@ -186,6 +187,62 @@ non-zero speed. `position` is the shared scroll position, from 0 to 1. The
 timing is an estimate, from the word count at the target WPM.
 `suggestedSpeed` is the speed that would cover the script in that time,
 measured from the live layout. It is `null` when it can't be measured.
+`cues` is how many `[CUE id · LABEL]` lines the displays are showing, which is
+how many [events](#events) a full read-through will fire. It is 0 with
+`presentation.cues: "hide"`, because a hidden cue is not on screen to cross.
+
+## Events
+
+`GET /api/events` is a [Server-Sent Events][sse] stream, under the same access
+rules as everything else (this Mac, a token if one is set, no cross-origin
+pages). It opens whether or not the control page is, and events start when it
+connects.
+
+```
+event: cue
+data: {"id":"1B","label":"NAME","text":"[CUE 1B · NAME]","index":1,"at":"2026-11-10T07:41:02.120Z","position":0.083}
+
+event: playback
+data: {"state":"running","at":"2026-11-10T07:41:00.100Z","position":0}
+```
+
+- **`cue`** fires once when a cue line crosses the reading line while the
+  script scrolls forward: the pacer, the driving display scrolled by hand, or
+  a scrub of the preview. Scrolling back over a cue and forward again fires it
+  again. A position that is *set* rather than scrolled to (`goto`,
+  start-over, Sync's "send my position") fires nothing, so jumping past five
+  cues does not switch five scenes; start-over puts every cue ahead of the
+  line again, so a fresh read-through fires them all.
+- **`playback`** fires on every start and pause, from any source (the Space
+  bar, the palette, a gamepad, this API), as `running` or `paused`, and on
+  start-over as `reset` (after a `paused` if it was running). Loading a
+  script pauses, so it sends `paused` when the prompter was running.
+- `id` and `label` are the cue's two parts: `[CUE <id> · <label>]`, the label
+  being everything after the first `·`. `index` counts the script's cues from
+  0, so two cues with the same id are told apart. `at` is the control page's
+  clock (this Mac's) when it saw the crossing; `position` is the shared
+  position then, 0 to 1.
+- A cue is a line holding only `[CUE id · LABEL]`. Any other bracketed text,
+  `[PAUSE]` or a cue mid-sentence, is a direction and fires nothing.
+- The reading line is the TMP100 layout's (`readingLinePct`), and a cue counts
+  as crossed when the bottom of its text reaches it, so a cue on the first
+  line fires a moment after scrolling starts. Other layouts have no reading
+  line, and use the top of the readable area instead.
+- Nothing is replayed: a subscriber hears events from when it connects. A
+  subscriber that stops reading for 64 events is disconnected, and an idle
+  stream sends a `: keepalive` comment every 15 s.
+- The prompter knows nothing about what a cue is for. Scenes are the
+  subscriber's business.
+
+```sh
+curl -sN $API/events
+```
+
+`fixtures/cue-events/` holds a recorded rehearsal of the launch script: the
+script, the events the page pushes (`events.json`) and the exact stream
+(`events.sse`), for testing a subscriber without a prompter.
+
+[sse]: https://html.spec.whatwg.org/multipage/server-sent-events.html
 
 ## Errors
 
