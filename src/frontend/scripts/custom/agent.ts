@@ -64,6 +64,8 @@ export type HostSnapshot = {
   draftHeld: boolean;
   pdfOpen: boolean;
   document: { id: string; name: string };
+  /** `[CUE id · LABEL]` lines the displays show, which cue events fire on. */
+  cues: number;
 };
 
 /** The control page, as the agent API sees it. */
@@ -77,6 +79,12 @@ export interface AgentHost {
   tmp100(): Tmp100Params;
   updateTmp100(patch: Partial<Tmp100Params>): void;
   goto(position: number): void;
+  /**
+   * Pause and go back to the beginning: the Cmd+Option+T action. One member
+   * rather than setRunning + goto, because a start-over is also an event on
+   * GET /api/events and re-arms every cue.
+   */
+  startOver(): void;
   /** Write and open a document, and publish it to the displays. */
   loadDocument(name: string, html: string): void;
   /** The text the displays are showing, one line per line. */
@@ -408,6 +416,7 @@ export class AgentController {
         loadedByAgent: !!this.#record(),
         ...t,
         remainingSeconds: Math.round(t.estimatedSeconds * (1 - s.position)),
+        cues: s.cues,
         suggestedSpeed: this.suggestedSpeed(),
       },
       liveEditing: s.liveEditing,
@@ -726,8 +735,7 @@ export class AgentController {
     unknownKeys(errors, p, ["run"]);
     const run = p.run === undefined ? false : bool(errors, "run", p.run);
     if (errors.length) throw invalid(errors);
-    this.#host.setRunning(false);
-    this.#host.goto(0);
+    this.#host.startOver();
     if (run) {
       await this.#host.settle();
       return this.start("start");

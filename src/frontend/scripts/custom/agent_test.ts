@@ -27,6 +27,7 @@ function fakeHost(over: Partial<HostSnapshot> = {}) {
     draftHeld: false,
     pdfOpen: false,
     document: { id: "doc-1", name: "Old" },
+    cues: 0,
     ...over,
   };
   let tmp: Tmp100Params = { ...TMP100_DEFAULTS };
@@ -58,6 +59,11 @@ function fakeHost(over: Partial<HostSnapshot> = {}) {
     goto: (r) => {
       calls.push(`goto ${r}`);
       state.position = r;
+    },
+    startOver: () => {
+      calls.push("start over");
+      state.running = false;
+      state.position = 0;
     },
     loadDocument: (name, h) => {
       calls.push(`load ${name}`);

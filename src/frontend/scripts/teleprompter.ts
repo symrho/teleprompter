@@ -65,10 +65,13 @@ import {
 } from "./custom/tmp100Controls.ts";
 import { AgentController, type AgentHost } from "./custom/agent.ts";
 import {
+  type AgentBridge,
   connectAgentBridge,
   htmlToText,
   nextFrame,
 } from "./custom/agentBridge.ts";
+import { CueWatcher } from "./custom/cues.ts";
+import { PreviewCues } from "./custom/cueControls.ts";
 import { TMP100_SLUG } from "./custom/tmp100.ts";
 import { SettingsControls } from "./settingsControls.ts";
 import { GamepadControls } from "./gamepadControls.ts";
@@ -136,6 +139,11 @@ export class Teleprompter {
   // CUSTOM (symrho fork)
   tmp100: Tmp100Controls;
   agent: AgentController;
+  // Cue events (custom/cues.ts). Optional because positions and the Space bar
+  // can reach their hooks before the constructor has built them.
+  #cues: CueWatcher | undefined;
+  #previewCues: PreviewCues | undefined;
+  #bridge: AgentBridge | undefined;
   splitPanel: WaSplitPanel;
   btnMessage: WaButton;
   editor: Wordgard;
@@ -561,13 +569,22 @@ export class Teleprompter {
     const commands = buildCommands(this);
     // CUSTOM (symrho fork): the agent API and the TMP100 commands. Built on
     // the same host, so a command, the card and an agent share one path.
+    // Cue events: measured on the preview, pushed out over the bridge.
+    this.#previewCues = new PreviewCues(
+      () => <HTMLElement | null> this.#previewScroller(),
+      (stage) => this.#readingLine(stage),
+    );
+    this.#cues = new CueWatcher({
+      geometry: () => this.#pdfBytes ? null : this.#previewCues!.geometry(),
+      emit: (e) => this.#bridge?.emit(e.event, e.data),
+    });
     const agentHost = this.#agentHost();
     this.agent = new AgentController(agentHost, localStorage);
-    commands.push(...tmp100Commands(this.tmp100, () => {
-      agentHost.setRunning(false);
-      agentHost.goto(0);
-    }));
-    connectAgentBridge(this.agent, (s) => this.tmp100.setBridgeStatus(s));
+    commands.push(...tmp100Commands(this.tmp100, () => agentHost.startOver()));
+    this.#bridge = connectAgentBridge(
+      this.agent,
+      (s) => this.tmp100.setBridgeStatus(s),
+    );
     setInterval(() => this.tmp100.setTiming(this.agent.status()), 1000);
     this.palette = new PaletteControls(commands, {
       isEditorFocused: () => this.editor.hasFocus,
@@ -998,9 +1015,14 @@ export class Teleprompter {
     if (now <= this.#scrubUntil) {
       this.#lastRatio = msg.r;
       this.link.sendScroll(msg.r);
+      this.#cues?.motion(msg.r); // CUSTOM (symrho fork): a scrub is a scroll
       return;
     }
-    if (now < this.#scaleUntil) this.#lastRatio = msg.r;
+    if (now < this.#scaleUntil) {
+      this.#lastRatio = msg.r;
+      // CUSTOM (symrho fork): a re-anchor is not reading past anything.
+      this.#cues?.jump(msg.r);
+    }
   }
 
   /** Whether a wheel over the preview moves the audience. Also a command. */
@@ -1385,6 +1407,8 @@ export class Teleprompter {
     if (id !== this.#driverID()) return;
 
     this.#lastRatio = ratio;
+    // CUSTOM (symrho fork): the one place the room's position advances.
+    this.#cues?.motion(ratio);
 
     // The pacing viewer's position goes out to everyone else on every
     // sample it sends — ~60 a second, on the unreliable channel, applied
@@ -2054,6 +2078,7 @@ export class Teleprompter {
           draftHeld: this.#draftHeld,
           pdfOpen: !!this.#pdfBytes,
           document: { id, name: this.docControls.storage.get(id)?.name ?? "" },
+          cues: this.#pdfBytes ? 0 : this.#previewCues?.count() ?? 0,
         };
       },
       setSpeed: (speed) => {
@@ -2077,6 +2102,15 @@ export class Teleprompter {
         this.#lastRatio = r;
         this.link.sendScroll(r);
         this.#postToPreview({ type: "scroll", r, s: 0 });
+        this.#cues?.jump(r);
+      },
+      startOver: () => {
+        if (this.#autoScrollRunning) this.toggleAutoScroll();
+        this.#lastRatio = 0;
+        this.link.sendScroll(0);
+        this.#postToPreview({ type: "scroll", r: 0, s: 0 });
+        this.#cues?.jump(0);
+        this.#cues?.playback("reset", 0);
       },
       loadDocument: (name, html) => {
         if (this.#pdfBytes) this.closePdf();
@@ -2108,6 +2142,28 @@ export class Teleprompter {
   toggleAutoScroll() {
     this.#autoScrollRunning = !this.#autoScrollRunning;
     this.#applyScrollRoles();
+    // CUSTOM (symrho fork): every start and pause, however it was asked for,
+    // passes through here — the Space bar, the palette, a gamepad, the API.
+    this.#cues?.playback(
+      this.#autoScrollRunning ? "running" : "paused",
+      this.#lastRatio,
+    );
+  }
+
+  /**
+   * CUSTOM (symrho fork): where the reading line sits below the preview
+   * stage's scroll top, which is where a cue counts as crossed.
+   *
+   * The TMP100 layout says so outright: `#main`'s padding puts position 0's
+   * first line on it, `readingLinePct` of the stage down. Other layouts have
+   * no reading line, so the top of the readable area stands in for one — the
+   * fold, below a sticky clock strip — and a cue fires as it leaves the screen.
+   */
+  #readingLine(stage: HTMLElement): number {
+    if (this.themeControls.storage.getLayout() === TMP100_SLUG) {
+      return stage.clientHeight * this.tmp100.params().readingLinePct / 100;
+    }
+    return this.#previewFold();
   }
 
   /**
@@ -2381,6 +2437,7 @@ export class Teleprompter {
     this.#lastRatio = ratio;
     this.link.sendScroll(ratio);
     this.#postToPreview({ type: "scroll", r: ratio, s: 0 });
+    this.#cues?.jump(ratio); // CUSTOM (symrho fork): a jump, not a scroll
   }
 
   /** Where this pane's top line is, as a ratio in a display's document. */

@@ -10,10 +10,22 @@ import { AgentController, answer } from "./agent.ts";
 
 export type BridgeStatus = "connecting" | "connected" | "offline";
 
+export type AgentBridge = {
+  /**
+   * Push an event for the server to fan out on GET /api/events. Sent as
+   * `{event, data}` with no `id`, which is how the server tells it from a
+   * reply. Dropped while the socket is down rather than queued: a cue that
+   * arrives after the moment it marked would switch a scene at the wrong time,
+   * which is worse than not switching it.
+   */
+  emit(event: string, data: unknown): void;
+  stop(): void;
+};
+
 export function connectAgentBridge(
   ctl: AgentController,
   onStatus: (s: BridgeStatus) => void = () => {},
-): () => void {
+): AgentBridge {
   let ws: WebSocket | null = null;
   let retry = 1000;
   let stopped = false;
@@ -57,10 +69,16 @@ export function connectAgentBridge(
   };
   open();
 
-  return () => {
-    stopped = true;
-    clearTimeout(timer);
-    ws?.close();
+  return {
+    emit(event, data) {
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ event, data }));
+    },
+    stop() {
+      stopped = true;
+      clearTimeout(timer);
+      ws?.close();
+    },
   };
 }
 

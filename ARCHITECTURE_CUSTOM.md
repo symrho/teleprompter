@@ -118,7 +118,33 @@ from the *published* HTML, which is what the displays show.
   added to `COMMAND_SPECS`. That way upstream's generated
   `docs/shortcuts.md` and its test are unchanged.
 
-### 5. MCP (`tools/mcp/prompter-mcp.ts`)
+### 5. Cue events (`custom/cues.ts`, `custom/cueControls.ts`, `GET /api/events`)
+
+The video pipeline switches scenes when a `[CUE id · LABEL]` line crosses the
+reading line, so the control page reports those crossings, and start, pause
+and start-over, on a Server-Sent Events stream.
+
+- **Measured on the preview.** Every display lays out in the reference box and
+  the preview is that box, so a cue's offset there is its offset on every
+  display. Nothing new travels over WebRTC and the viewer is unchanged.
+  `PreviewCues` walks the preview's `#main` for text nodes that are only a
+  cue, and caches the offsets until the script's DOM or the stage's size
+  changes.
+- **A crossing is a stretch, not a flag.** On each forward position the
+  tracker fires the cues whose offset lies between where the reading line was
+  and where it is now, both measured in the current layout. So an edit or a
+  resize that moves a cue across the line fires nothing, backwards fires
+  nothing, and re-arming after a scroll back or a start-over needs no state.
+- **Motion and jumps are told apart at the call site.** The driver's samples
+  (`#onViewerScroll`) and a scrub are motion; `goto`, start-over, "send my
+  position" and a scale re-anchor are jumps. Playback events come from
+  `toggleAutoScroll`, which every start and pause passes through, and from a
+  new `AgentHost.startOver`, which the API and Cmd+Option+T now share.
+- **Pushed over the bridge.** The page sends `{event, data}` with no `id`; the
+  server checks the event name against a fixed list and fans it out to every
+  subscriber. It keeps nothing, and a cue is never replayed.
+
+### 6. MCP (`tools/mcp/prompter-mcp.ts`)
 
 A stdio JSON-RPC server with no dependencies. Each tool is one HTTP call. The
 HTTP API is the automation boundary, and the adapter adds no logic of its own.
@@ -137,10 +163,11 @@ is ever served to browser code. See [AGENT_API.md](AGENT_API.md).
 | --- | --- |
 | `src/backend/agentapi.go`, `agentapi_test.go` | new |
 | `src/frontend/scripts/custom/*` | new |
+| `fixtures/cue-events/*` | new: a recorded cue-event stream and the script that produced it |
 | `tools/mcp/*` | new |
 | `QUICKSTART.md`, `AGENT_API.md`, `ARCHITECTURE_CUSTOM.md`, `UPSTREAM.md`, `ROADMAP_CUSTOM.md` | new |
 | `src/backend/main.go` | two flags, one `wrap`, one log call |
-| `src/frontend/scripts/teleprompter.ts` | imports, two fields, the TMP100 card and seeding, `#agentHost`, command and bridge wiring, `nextFrame` in `#pushSettings` |
+| `src/frontend/scripts/teleprompter.ts` | imports, a few fields, the TMP100 card and seeding, `#agentHost`, command and bridge wiring, `nextFrame` in `#pushSettings`, one-line cue hooks where the position changes and in `toggleAutoScroll` |
 | `src/frontend/scripts/docControls.ts` | `putDocument` |
 | `src/frontend/scripts/editor.ts` | `editorJSONFromHtml` |
 | `deno.jsonc` | the test task also runs `custom/` and `tools/mcp/` tests |
